@@ -1,0 +1,59 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // url is configured in prisma.config.ts (Prisma v7)
+}
+
+enum OrderStatus {
+  PENDING
+  IN_PROGRESS
+  SUCCESS
+  FAILED
+}
+
+model Merchant {
+  id           Int      @id @default(autoincrement())
+  address      String   @unique
+  name         String   @unique
+  email        String   @unique
+  passwordHash String
+  merchant_id  String   @unique
+  active       Boolean  @default(true)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  orders       Order[]
+}
+
+model Order {
+  id               Int         @id @default(autoincrement())
+  merchant_id      String
+  merchant_address String
+  order_id         String
+  invoice_id       String
+  amount           String
+  token            String      @default("USDT")
+  status           OrderStatus @default(PENDING)
+
+  txid             String?     @unique  // ✅ add this
+
+  created_at       DateTime    @default(now())
+  updated_at       DateTime    @updatedAt
+
+  merchant Merchant? @relation(fields: [merchant_id], references: [merchant_id])
+
+  @@index([merchant_id])
+  @@index([merchant_address])
+  @@unique([merchant_id, order_id])
+  @@unique([merchant_id, invoice_id])
+}
+
