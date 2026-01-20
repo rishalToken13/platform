@@ -1,39 +1,59 @@
 // src/lib/apiClient.js
+const TOKEN_KEY = "token13_token";
+
 export function getToken() {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("token");
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem(TOKEN_KEY) || "";
 }
 
-export function setToken(token) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem("token", token);
-}
+export async function apiFetch(path, opts = {}) {
+  const {
+    method = "GET",
+    body,
+    auth = true,
+    headers = {},
+  } = opts;
 
-export function clearToken() {
-  if (typeof window === "undefined") return;
-  localStorage.removeItem("token");
-}
+  const finalHeaders = { ...headers };
 
-export async function apiFetch(path, { method = "GET", body, auth = true } = {}) {
-  const headers = { "content-type": "application/json" };
-
+  // ✅ attach auth token
   if (auth) {
     const token = getToken();
-    if (token) headers.authorization = `Bearer ${token}`;
+    if (token) finalHeaders.authorization = `Bearer ${token}`;
+  }
+
+  // ✅ JSON encode plain objects
+  let finalBody = body;
+  const isPlainObject =
+    body &&
+    typeof body === "object" &&
+    !(body instanceof FormData) &&
+    !(body instanceof Blob) &&
+    !(body instanceof ArrayBuffer);
+
+  if (isPlainObject) {
+    finalHeaders["content-type"] = finalHeaders["content-type"] || "application/json";
+    finalBody = JSON.stringify(body);
   }
 
   const res = await fetch(path, {
     method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
+    headers: finalHeaders,
+    body: finalBody,
   });
 
-  const json = await res.json().catch(() => null);
-
-  if (!res.ok || json?.ok === false) {
-    const msg = json?.error || `Request failed (${res.status})`;
-    throw new Error(msg);
+  const text = await res.text();
+  let json;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    throw new Error(text || `Request failed (${res.status})`);
   }
 
-  return json.data;
+  if (!res.ok || json?.ok === false) {
+    throw new Error(json?.error || `Request failed (${res.status})`);
+  }
+
+  // your API returns { ok:true, data:{...} }
+  return json.data ?? json;
 }

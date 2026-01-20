@@ -63,6 +63,7 @@ export async function POST(req) {
       );
     }
   } catch (e) {
+    console.error("REGISTER_ERROR:", e); // ✅ add this
     if (e?.code === "P2002") return bad("Merchant already exists (unique field conflict)", 409);
     return bad(e?.message || "Server error", 500);
   }
