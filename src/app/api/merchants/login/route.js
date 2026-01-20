@@ -3,6 +3,8 @@ import { prisma } from "@/lib/db";
 import { ok, bad } from "@/lib/http";
 import { signAuthToken } from "@/lib/auth";
 
+export const runtime = "nodejs";
+
 export async function POST(req) {
   try {
     const body = await req.json();
@@ -13,20 +15,28 @@ export async function POST(req) {
     }
 
     const merchant = await prisma.merchant.findUnique({
-      where: { email: String(email).toLowerCase() },
+      where: { email: String(email).toLowerCase().trim() },
+      select: {
+        merchant_id: true,
+        address: true,
+        name: true,
+        email: true,
+        active: true,
+        passwordHash: true
+      }
     });
 
-    if (!merchant) return bad("Invalid credentials", 401);
+    if (!merchant) return bad("Invalid email or password", 401);
     if (!merchant.active) return bad("Merchant is inactive", 403);
 
-    const valid = await bcrypt.compare(String(password), merchant.passwordHash);
-    if (!valid) return bad("Invalid credentials", 401);
+    const okPwd = await bcrypt.compare(String(password), merchant.passwordHash);
+    if (!okPwd) return bad("Invalid email or password", 401);
 
     const token = await signAuthToken({
-      sub: merchant.merchant_id,
+      sub: merchant.merchant_id, // ✅ bytes32 merchant_id
       address: merchant.address,
       email: merchant.email,
-      name: merchant.name,
+      name: merchant.name
     });
 
     return ok({
@@ -36,8 +46,8 @@ export async function POST(req) {
         address: merchant.address,
         name: merchant.name,
         email: merchant.email,
-        active: merchant.active,
-      },
+        active: merchant.active
+      }
     });
   } catch (e) {
     return bad(e?.message || "Server error", 500);

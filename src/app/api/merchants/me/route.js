@@ -7,27 +7,27 @@ export const runtime = "nodejs";
 export async function GET(req) {
   try {
     const token = getBearerToken(req);
-    if (!token) return bad("Missing Authorization", 401);
+    if (!token) return bad("Missing Authorization: Bearer <token>", 401);
 
     const auth = await verifyAuthToken(token);
-    const merchant_id = auth.sub;
+    const merchantId = auth.sub;
 
-    const orders = await prisma.order.findMany({
-      where: { merchant_id },
-      orderBy: { created_at: "desc" },
+    const merchant = await prisma.merchant.findUnique({
+      where: { merchant_id: merchantId },
       select: {
-        order_id: true,
-        invoice_id: true,
-        amount: true,
-        token: true,
-        status: true,
-        txid: true,
+        merchant_id: true,
+        address: true,
+        name: true,
+        email: true,
+        active: true,
         created_at: true,
         updated_at: true
       }
     });
 
-    return ok({ orders });
+    if (!merchant) return bad("Merchant not found", 404);
+
+    return ok({ merchant });
   } catch (e) {
     return bad(e?.message || "Server error", 500);
   }

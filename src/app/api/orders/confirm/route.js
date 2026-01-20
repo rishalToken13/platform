@@ -1,135 +1,110 @@
 import { prisma } from "@/lib/db";
-import { ok, bad } from "@/lib/http";
-import { getBearerToken, verifyAuthToken } from "@/lib/auth";
-import { getTronWebPublic } from "@/lib/tron";
-import { decodePaymentEvent, toBytes32, normHex } from "@/lib/tronEvents";
-import { USDT } from "@/config";
+import { corsJson, corsResponse } from "@/lib/cors";
+import { decodePaymentDetectedFromTx } from "@/lib/tronEvents";
 
-/**
- * POST /api/orders/confirm
- * Body: { txid, order_id? , invoice_id? }
- */
+export const runtime = "nodejs";
+
+export async function OPTIONS() {
+  return corsResponse(null, { status: 204 });
+}
+
 export async function POST(req) {
   try {
-    const bearer = getBearerToken(req);
-    if (!bearer) return bad("Missing Authorization: Bearer <token>", 401);
-    const auth = await verifyAuthToken(bearer);
-
     const body = await req.json();
-    const { txid, order_id, invoice_id } = body || {};
-    if (!txid) return bad("Missing required field: txid", 400);
-    if (!order_id && !invoice_id) return bad("Provide at least one: order_id or invoice_id", 400);
+    const { txid } = body || {};
+    if (!txid) return corsJson({ ok: false, error: "txid is required" }, 400);
 
+    const decoded = await decodePaymentDetectedFromTx(txid);
+
+    if (decoded.status === "FAILED") {
+      // If tx exists but failed, optionally mark FAILED
+      return corsJson({
+        ok: true,
+        data: { status: "FAILED", reason: decoded.reason, txid }
+      });
+    }
+
+    const { event } = decoded;
+
+    // Find order by invoice_id (bytes32) + merchant_id (bytes32)
     const order = await prisma.order.findFirst({
       where: {
-        merchant_id: auth.sub,
-        ...(order_id ? { order_id: String(order_id) } : {}),
-        ...(invoice_id ? { invoice_id: String(invoice_id) } : {})
-      }
+        merchant_id: event.merchantId,
+        invoice_id: event.invoiceId,
+      },
+      select: {
+        id: true,
+        status: true,
+        txid: true,
+        order_id: true,
+        invoice_id: true,
+        merchant_id: true,
+        amount: true,
+        token: true,
+      },
     });
 
-    if (!order) return bad("Order not found for this merchant", 404);
-
-    // Idempotency: if txid already stored
-    if (order.txid) {
-      if (order.txid === String(txid)) {
-        return ok({ updated: false, status: order.status, txid: order.txid, reason: "Already confirmed with same txid" });
-      }
-      return bad("Order already confirmed with a different txid", 409, { existingTxid: order.txid, newTxid: String(txid) });
+    if (!order) {
+      return corsJson(
+        {
+          ok: false,
+          error: "Order not found for this PaymentDetected event (merchant_id + invoice_id)",
+          details: { merchantId: event.merchantId, invoiceId: event.invoiceId },
+        },
+        404
+      );
     }
 
-    const tronWeb = getTronWebPublic();
-    const txInfo = await tronWeb.trx.getTransactionInfo(String(txid));
-
-    if (!txInfo || !txInfo.id) {
-      return bad("Transaction not found yet. Try again after confirmation.", 404);
-    }
-
-    const receiptResult = String(txInfo?.receipt?.result || "").toUpperCase();
-    const receiptOk = receiptResult === "SUCCESS";
-
-    const decoded = decodePaymentEvent(tronWeb, txInfo);
-
-    if (!decoded) {
-      const fallbackStatus = receiptOk ? "IN_PROGRESS" : "FAILED";
-
-      await prisma.order.update({
-        where: { id: order.id },
-        data: { status: fallbackStatus }
-      });
-
-      return ok({
-        updated: true,
-        status: fallbackStatus,
-        receipt: receiptResult,
-        txid: txInfo.id,
-        reason: "No event decoded from logs (ensure Payment ABI includes events)"
+    // If already confirmed with same tx, idempotent success
+    if (order.status === "SUCCESS" && order.txid === txid) {
+      return corsJson({
+        ok: true,
+        data: { updated: false, status: "SUCCESS", order, txid },
       });
     }
 
-    if (decoded.eventName !== "PaymentDetected") {
-      return bad(`Unexpected event decoded: ${decoded.eventName}`, 409);
+    // Optional validation: ensure order_id matches
+    if (order.order_id !== event.orderId) {
+      return corsJson(
+        {
+          ok: false,
+          error: "Order mismatch: event.orderId does not match DB order_id",
+          details: { db: order.order_id, chain: event.orderId },
+        },
+        409
+      );
     }
 
-    // Validate IDs (bytes32)
-    const evMerchantId = normHex(decoded.args.merchantId);
-    const evOrderId = normHex(decoded.args.orderId);
-    const evInvoiceId = normHex(decoded.args.invoiceId);
-
-    const dbMerchantB32 = normHex(toBytes32(tronWeb, order.merchant_id));
-    const dbOrderB32 = normHex(toBytes32(tronWeb, order.order_id));
-    const dbInvoiceB32 = normHex(toBytes32(tronWeb, order.invoice_id));
-
-    if (evMerchantId && evMerchantId !== dbMerchantB32) {
-      return bad("merchantId mismatch", 409, { expected: dbMerchantB32, got: evMerchantId });
-    }
-    if (evOrderId && evOrderId !== dbOrderB32) {
-      return bad("orderId mismatch", 409, { expected: dbOrderB32, got: evOrderId });
-    }
-    if (evInvoiceId && evInvoiceId !== dbInvoiceB32) {
-      return bad("invoiceId mismatch", 409, { expected: dbInvoiceB32, got: evInvoiceId });
-    }
-
-    // Validate token address: PaymentDetected.paymentToken should equal USDT contract
-    // decoded.args.paymentToken is base58 (we convert in decoder)
-    const expectedToken = String(USDT.address);
-    const gotToken = String(decoded.args.paymentToken || "");
-
-    if (expectedToken && gotToken && expectedToken !== gotToken) {
-      return bad("paymentToken mismatch (not USDT)", 409, { expected: expectedToken, got: gotToken });
-    }
-
-    // Validate amount:
-    // decoded.args.amount is raw uint256 string (ex: "10000000" for 10 USDT w/ 6 decimals)
-    // Your DB order.amount is human string "10.00"
-    // For now: we only ensure it's >0 and receipt is SUCCESS.
-    // (If you want strict match, we’ll also fetch USDT decimals and convert.)
-    const rawAmount = String(decoded.args.amount || "0");
-    if (!/^\d+$/.test(rawAmount) || BigInt(rawAmount) <= 0n) {
-      return bad("Invalid amount in event", 409, { rawAmount });
-    }
-
-    const finalStatus = receiptOk ? "SUCCESS" : "FAILED";
-
-    await prisma.order.update({
+    // Update DB to SUCCESS, store txid (unique)
+    const updated = await prisma.order.update({
       where: { id: order.id },
       data: {
-        status: finalStatus,
-        txid: txInfo.id
-      }
+        status: "SUCCESS",
+        txid,
+        // optionally keep token/amount in DB but you already store these
+      },
+      select: {
+        order_id: true,
+        invoice_id: true,
+        merchant_id: true,
+        amount: true,
+        token: true,
+        status: true,
+        txid: true,
+        updated_at: true,
+      },
     });
 
-    return ok({
-      updated: true,
-      status: finalStatus,
-      txid: txInfo.id,
-      receipt: receiptResult,
-      event: {
-        name: decoded.eventName,
-        args: decoded.args
-      }
+    return corsJson({
+      ok: true,
+      data: {
+        updated: true,
+        status: "SUCCESS",
+        order: updated,
+        chain: event,
+      },
     });
   } catch (e) {
-    return bad(e?.message || "Server error", 500);
+    return corsJson({ ok: false, error: e?.message || "Server error" }, 500);
   }
 }

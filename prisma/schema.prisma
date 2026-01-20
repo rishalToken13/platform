@@ -22,9 +22,9 @@ enum OrderStatus {
 
 model Merchant {
   id           Int      @id @default(autoincrement())
-  address      String   @unique
+  address      String   
   name         String   @unique
-  email        String   @unique
+  email        String   
   passwordHash String
   merchant_id  String   @unique
   active       Boolean  @default(true)

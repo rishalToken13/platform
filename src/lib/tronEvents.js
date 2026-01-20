@@ -1,84 +1,75 @@
-import { MERCHANT_REGISTRY, PAYMENT } from "@/config";
+import { PAYMENT } from "@/config";
+import { getTronWebPublic } from "@/lib/tronPublic";
 
-const MERCHANT_REGISTRY_EVENTS = MERCHANT_REGISTRY.abi.filter((x) => x.type === "event");
-const PAYMENT_EVENTS = PAYMENT.abi.filter((x) => x.type === "event");
+const PAYMENT_DETECTED_ABI_ITEM = PAYMENT.abi.find(
+  (x) => x.type === "event" && x.name === "PaymentDetected"
+);
 
-function eventSignature(tronWeb, eventAbi) {
-  const types = eventAbi.inputs.map((i) => i.type).join(",");
-  return tronWeb.sha3(`${eventAbi.name}(${types})`);
+if (!PAYMENT_DETECTED_ABI_ITEM) {
+  // fail fast at build-time
+  throw new Error("PaymentDetected event not found in PAYMENT ABI");
 }
 
-export function normHex(v) {
-  if (!v) return "";
-  const s = String(v).toLowerCase();
-  return s.startsWith("0x") ? s : `0x${s}`;
-}
+export async function decodePaymentDetectedFromTx(txid) {
+  const tronWeb = getTronWebPublic();
 
-export function toBytes32(tronWeb, str) {
-  const hex = tronWeb.toHex(String(str)).replace(/^0x/, "");
-  return "0x" + (hex + "0".repeat(64)).slice(0, 64);
-}
+  // Fetch tx + receipt info
+  const txInfo = await tronWeb.trx.getTransactionInfo(txid);
+  if (!txInfo) throw new Error("Transaction not found on chain yet");
 
-function tryDecodeLog(tronWeb, log, eventAbi) {
-  const sig = normHex(eventSignature(tronWeb, eventAbi));
-  const topic0 = normHex(log.topics?.[0]);
-  if (!topic0 || topic0 !== sig) return null;
+  // SUCCESS on TRON: receipt.result === "SUCCESS"
+  const receiptResult = txInfo?.receipt?.result;
+  if (receiptResult && receiptResult !== "SUCCESS") {
+    return { status: "FAILED", reason: `receipt.result=${receiptResult}`, txInfo };
+  }
 
-  const indexedInputs = eventAbi.inputs.filter((i) => i.indexed);
-  const nonIndexedInputs = eventAbi.inputs.filter((i) => !i.indexed);
+  const logs = txInfo.log || txInfo.logs || [];
+  if (!logs.length) throw new Error("No logs found in transaction (not a contract event?)");
 
-  const args = {};
+  // PaymentCore contract address in txInfo is hex, logs also in hex.
+  const paymentHex = tronWeb.address.toHex(PAYMENT.address).replace(/^0x/, "");
 
-  // Indexed params from topics
-  for (let i = 0; i < indexedInputs.length; i++) {
-    const input = indexedInputs[i];
-    const topicVal = log.topics[i + 1];
-    if (!topicVal) continue;
+  // Find logs emitted by PAYMENT contract
+  const fromPaymentLogs = logs.filter((l) => {
+    const addr = (l.address || "").toLowerCase();
+    return addr === paymentHex.toLowerCase();
+  });
 
-    if (input.type === "address") {
-      const hex = "0x" + topicVal.slice(-40);
-      args[input.name] = tronWeb.address.fromHex(hex);
-    } else {
-      args[input.name] = normHex(topicVal);
+  if (!fromPaymentLogs.length) {
+    throw new Error("No logs found from PAYMENT contract in this tx");
+  }
+
+  // Decode candidate logs and find PaymentDetected
+  for (const l of fromPaymentLogs) {
+    // tronweb expects "topics" and "data"
+    const topics = l.topics || [];
+    const data = l.data;
+
+    try {
+      const decoded = tronWeb.utils.abi.decodeLog(
+        PAYMENT_DETECTED_ABI_ITEM.inputs,
+        data,
+        topics.slice(1) // remove signature topic
+      );
+
+      // decoded has keys by input name
+      return {
+        status: "SUCCESS",
+        event: {
+          merchantId: decoded.merchantId,
+          orderId: decoded.orderId,
+          invoiceId: decoded.invoiceId,
+          paymentToken: decoded.paymentToken,
+          amount: decoded.amount?.toString?.() ?? String(decoded.amount),
+          timestamp: decoded.timestamp?.toString?.() ?? String(decoded.timestamp),
+        },
+        txInfo,
+      };
+    } catch (e) {
+      // not this event
+      continue;
     }
   }
 
-  // Non-indexed params from data
-  if (nonIndexedInputs.length > 0) {
-    const types = nonIndexedInputs.map((i) => i.type);
-    const names = nonIndexedInputs.map((i) => i.name);
-
-    const dataHex = log.data?.startsWith("0x") ? log.data : `0x${log.data || ""}`;
-    const decoded = tronWeb.utils.abi.decodeParams(types, dataHex);
-
-    for (let i = 0; i < names.length; i++) {
-      let v = decoded[i];
-      if (types[i] === "address") v = tronWeb.address.fromHex(v);
-      args[names[i]] = v;
-    }
-  }
-
-  return { eventName: eventAbi.name, args };
-}
-
-export function decodeMerchantRegistryEvent(tronWeb, txInfo) {
-  const logs = txInfo?.log || [];
-  for (const log of logs) {
-    for (const ev of MERCHANT_REGISTRY_EVENTS) {
-      const decoded = tryDecodeLog(tronWeb, log, ev);
-      if (decoded) return decoded;
-    }
-  }
-  return null;
-}
-
-export function decodePaymentEvent(tronWeb, txInfo) {
-  const logs = txInfo?.log || [];
-  for (const log of logs) {
-    for (const ev of PAYMENT_EVENTS) {
-      const decoded = tryDecodeLog(tronWeb, log, ev);
-      if (decoded) return decoded;
-    }
-  }
-  return null;
+  throw new Error("PaymentDetected event not found in tx logs");
 }
