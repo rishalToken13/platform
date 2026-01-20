@@ -1,43 +1,45 @@
-// src/components/NavBar.jsx
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { clearToken } from "@/lib/apiClient";
+import { usePathname, useRouter } from "next/navigation";
 
-export default function NavBar() {
+export default function Navbar() {
+  const pathname = usePathname();
   const router = useRouter();
 
+  const hideNav = pathname === "/login" || pathname === "/register";
+
   function logout() {
-    clearToken();
-    router.push("/login");
+    localStorage.removeItem("token13_token"); // make sure key matches yours
+    router.replace("/login");
   }
 
+  if (hideNav) return null;
+
   return (
-    <div className="w-full border-b bg-white">
-      <div className="mx-auto max-w-4xl px-4 py-3 flex items-center justify-between">
-        <Link href="/dashboard" className="font-semibold">
+    <header className="border-b bg-white">
+      <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+        <Link href="/" className="font-semibold text-lg">
           token13 Merchant
         </Link>
 
-        <div className="flex items-center gap-4">
-          <Link href="/dashboard" className="text-sm hover:underline">
+        <nav className="flex items-center gap-6 text-sm">
+          <Link href="/dashboard" className="hover:text-gray-700 transition">
             Dashboard
           </Link>
-          <Link href="/register" className="text-sm hover:underline">
-            Register
+
+          <Link href="/orders" className="hover:text-gray-700 transition">
+            Orders
           </Link>
-          <Link href="/login" className="text-sm hover:underline">
-            Login
-          </Link>
+
           <button
             onClick={logout}
-            className="text-sm px-3 py-1 rounded border hover:bg-gray-50"
+            className="px-4 py-2 border rounded-md hover:bg-gray-100 transition"
           >
             Logout
           </button>
-        </div>
+        </nav>
       </div>
-    </div>
+    </header>
   );
 }
