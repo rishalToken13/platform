@@ -1,59 +1,59 @@
 // src/lib/apiClient.js
-
 const TOKEN_KEY = "token13_token";
 
 export function getToken() {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem(TOKEN_KEY);
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem(TOKEN_KEY) || "";
 }
 
-export function setToken(token) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(TOKEN_KEY, token);
-}
+export async function apiFetch(path, opts = {}) {
+  const {
+    method = "GET",
+    body,
+    auth = true,
+    headers = {},
+  } = opts;
 
-export function clearToken() {
-  if (typeof window === "undefined") return;
-  localStorage.removeItem(TOKEN_KEY);
-}
+  const finalHeaders = { ...headers };
 
-export async function apiFetch(path, options = {}) {
-  const token = getToken();
-
-  const headers = new Headers(options.headers || {});
-  headers.set("accept", "application/json");
-
-  const hasBody = options.body !== undefined && options.body !== null;
-  if (hasBody && !headers.has("content-type")) {
-    headers.set("content-type", "application/json");
+  // ✅ attach auth token
+  if (auth) {
+    const token = getToken();
+    if (token) finalHeaders.authorization = `Bearer ${token}`;
   }
 
-  // ✅ attach bearer token for all api calls if present
-  if (token && !headers.has("authorization")) {
-    headers.set("authorization", `Bearer ${token}`);
+  // ✅ JSON encode plain objects
+  let finalBody = body;
+  const isPlainObject =
+    body &&
+    typeof body === "object" &&
+    !(body instanceof FormData) &&
+    !(body instanceof Blob) &&
+    !(body instanceof ArrayBuffer);
+
+  if (isPlainObject) {
+    finalHeaders["content-type"] = finalHeaders["content-type"] || "application/json";
+    finalBody = JSON.stringify(body);
   }
 
   const res = await fetch(path, {
-    ...options,
-    headers,
+    method,
+    headers: finalHeaders,
+    body: finalBody,
   });
 
   const text = await res.text();
-  let json = null;
+  let json;
   try {
     json = text ? JSON.parse(text) : null;
   } catch {
-    // ignore non-json
+    throw new Error(text || `Request failed (${res.status})`);
   }
 
-  if (!res.ok) {
+  if (!res.ok || json?.ok === false) {
     throw new Error(json?.error || `Request failed (${res.status})`);
   }
 
-  if (json && json.ok === false) {
-    throw new Error(json.error || "Request failed");
-  }
-
-  // your API shape: { ok:true, data:{...} }
-  return json?.data ?? json;
+  // your API returns { ok:true, data:{...} }
+  return json.data ?? json;
 }
