@@ -11,7 +11,7 @@ export default function DashboardPage() {
 
   const [merchant, setMerchant] = useState(null);
   const [orders, setOrders] = useState([]);
-  const [amount, setAmount] = useState("10.00");
+  const [amount, setAmount] = useState("");
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -69,10 +69,13 @@ export default function DashboardPage() {
         <h2 className="text-lg font-semibold mb-3">Create Order</h2>
         <div className="flex gap-2 items-center">
           <input
-            className="border rounded px-3 py-2 w-40"
+            type="number"
+            step="0.01"
+            min="0"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
-            placeholder="Amount (USDT)"
+            placeholder="USDT"
+            className="w-full border rounded px-3 py-2 text-sm"
           />
           <button
             onClick={createOrder}
